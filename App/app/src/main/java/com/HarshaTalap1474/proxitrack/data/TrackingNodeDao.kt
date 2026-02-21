@@ -39,4 +39,16 @@ interface TrackingNodeDao {
 
     @Query("SELECT * FROM tracking_nodes WHERE macAddress = :mac LIMIT 1")
     suspend fun getNodeByMac(mac: String): TrackingNode?
+
+    // Gets real-time updates for a single tag (for the Details Page)
+    @Query("SELECT * FROM tracking_nodes WHERE macAddress = :mac LIMIT 1")
+    fun getNodeByMacFlow(mac: String): kotlinx.coroutines.flow.Flow<TrackingNode>
+
+    // Deletes a tag by its MAC address
+    @Query("DELETE FROM tracking_nodes WHERE macAddress = :mac")
+    suspend fun deleteByMac(mac: String)
+
+    // Gets the total number of paired devices (for the Profile Page)
+    @Query("SELECT COUNT(*) FROM tracking_nodes")
+    fun getTotalNodesCount(): kotlinx.coroutines.flow.Flow<Int>
 }

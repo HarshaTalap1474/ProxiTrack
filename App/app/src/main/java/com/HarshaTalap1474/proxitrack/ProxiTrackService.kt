@@ -217,14 +217,16 @@ class ProxiTrackService : Service() {
 
         val builder = NotificationCompat.Builder(this, "ProxiTrack_Alerts")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("⚠️ Tag Left Behind!")
-            .setContentText("You just lost connection to your $customName. Tap to view its last known location.")
+            // --- THE UPGRADE: Dynamic Personalized Title ---
+            .setContentTitle("⚠️ $customName Left Behind!")
+            .setContentText("We lost connection to your $customName. Tap to view its exact location on the map.")
             .setPriority(NotificationCompat.PRIORITY_MAX) // Heads-up display
             .setDefaults(NotificationCompat.DEFAULT_ALL) // Trigger default sound/vibrate
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
 
-        // Using a unique ID so if you lose 2 tags, you get 2 separate notifications
+        // Using a unique ID based on the name so if you lose your "Keys" AND your "Wallet",
+        // they don't overwrite each other. You will get TWO separate notifications!
         notificationManager.notify(customName.hashCode(), builder.build())
     }
 

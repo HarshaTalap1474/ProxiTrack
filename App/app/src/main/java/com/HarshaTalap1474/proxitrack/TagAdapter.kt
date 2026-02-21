@@ -1,5 +1,6 @@
 package com.HarshaTalap1474.proxitrack
 
+import android.content.Intent
 import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
@@ -24,6 +25,13 @@ class TagAdapter : ListAdapter<TrackingNode, TagAdapter.TagViewHolder>(TagCompar
     override fun onBindViewHolder(holder: TagViewHolder, position: Int) {
         val currentTag = getItem(position)
         holder.bind(currentTag)
+
+        // NEW: Click to open Details Page
+        holder.itemView.setOnClickListener {
+            val intent = Intent(holder.itemView.context, TagDetailsActivity::class.java)
+            intent.putExtra("MAC_ADDRESS", currentTag.macAddress)
+            holder.itemView.context.startActivity(intent)
+        }
     }
 
     // 3. The ViewHolder holds the specific UI elements in memory to avoid lag

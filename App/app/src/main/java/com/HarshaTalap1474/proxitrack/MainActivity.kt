@@ -16,7 +16,6 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import androidx.recyclerview.widget.ItemTouchHelper
 import com.HarshaTalap1474.proxitrack.data.AppDatabase
 import com.HarshaTalap1474.proxitrack.data.TrackingNode
 import com.HarshaTalap1474.proxitrack.data.TrackingNodeDao
@@ -77,6 +76,11 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<FloatingActionButton>(R.id.fabAddTag).setOnClickListener {
             startActivity(Intent(this, AddDeviceActivity::class.java))
+        }
+
+        // NEW: Link the Profile FAB
+        findViewById<FloatingActionButton>(R.id.fabProfile).setOnClickListener {
+            startActivity(Intent(this, ProfileActivity::class.java))
         }
     }
 
@@ -183,18 +187,7 @@ class MainActivity : AppCompatActivity() {
         recyclerView.adapter = adapter
         recyclerView.layoutManager = LinearLayoutManager(this)
 
-        val swipeHandler = object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT) {
-            override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder) = false
-
-            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val tag = adapter.currentList[viewHolder.adapterPosition]
-                lifecycleScope.launch {
-                    trackingDao.deleteNode(tag)
-                    Toast.makeText(this@MainActivity, "${tag.customName} Deleted", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-        ItemTouchHelper(swipeHandler).attachToRecyclerView(recyclerView)
+        // Swipe handler has been successfully removed!
     }
 
     // -----------------------------------------
