@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
@@ -36,19 +37,17 @@ class ProxiTrackService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private lateinit var trackingDao: TrackingNodeDao
 
-    // --- ADDED VARIABLES ---
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private val lastDbUpdate = mutableMapOf<String, Long>()
     private val lastLocUpdate = mutableMapOf<String, Long>()
 
     private var bleScanner: BluetoothLeScanner? = null
     private var isScanning = false
-    private var isMonitorRunning = false // FIX: Memory leak prevention
+    private var isMonitorRunning = false
 
     private val rssiBuffers = mutableMapOf<String, MutableList<Int>>()
     private val missedCycles = mutableMapOf<String, Int>()
 
-    // --- UPDATED ONCREATE ---
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -69,10 +68,8 @@ class ProxiTrackService : Service() {
 
         startForeground(1, notification)
 
-        // Wake up the engine (will handle its own restart logic)
         startBleScanning()
 
-        // FIX: Ensure we only ever have ONE monitor running in the background
         if (!isMonitorRunning) {
             startCycleMonitor()
             isMonitorRunning = true
@@ -89,15 +86,13 @@ class ProxiTrackService : Service() {
         }
 
         serviceScope.launch {
-            // 1. HARDWARE RACE CONDITION FIX: Stop scan, wait for chip to clear cache
             if (isScanning) {
                 bleScanner?.stopScan(scanCallback)
                 isScanning = false
                 Log.d("PIPELINE", "Stopping old scan to load new tags...")
-                delay(200) // Give the physical antenna 200ms to reset
+                delay(200)
             }
 
-            // 2. Fetch the fresh MACs
             val activeMacs = trackingDao.getAllMacAddresses().map { it.uppercase() }
 
             if (activeMacs.isEmpty()) {
@@ -107,7 +102,6 @@ class ProxiTrackService : Service() {
 
             Log.d("PIPELINE", "STEP 2: Starting scan with filters for: $activeMacs")
 
-            // 3. Build Hardware Filters
             val filters = activeMacs.map { mac ->
                 ScanFilter.Builder().setDeviceAddress(mac).build()
             }
@@ -120,13 +114,11 @@ class ProxiTrackService : Service() {
                 .setReportDelay(0)
                 .build()
 
-            // 4. Start the fresh scan
             bleScanner?.startScan(filters, settings, scanCallback)
             isScanning = true
         }
     }
 
-    // --- UPGRADED SCAN CALLBACK ---
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val mac = result.device.address.uppercase()
@@ -137,7 +129,6 @@ class ProxiTrackService : Service() {
                 val activeMacs = trackingDao.getAllMacAddresses().map { it.uppercase() }
 
                 if (activeMacs.contains(mac)) {
-                    // Reset the "lost" timer because we see the tag!
                     missedCycles[mac] = 0
 
                     val buffer = rssiBuffers.getOrPut(mac) { mutableListOf() }
@@ -151,22 +142,27 @@ class ProxiTrackService : Service() {
                         else -> 2               // Lost
                     }
 
-                    // 1. UPDATE RSSI (Throttled to once per second to prevent UI flickering)
                     if (currentTime - lastDbUpdate.getOrDefault(mac, 0L) > 1000) {
                         lastDbUpdate[mac] = currentTime
                         trackingDao.updateRssiAndStatus(mac, smoothedRssi, status, currentTime)
                     }
 
-                    // 2. CONTINUOUS TETHERING: Copy Phone's GPS to Tag (Every 15 seconds)
                     if (currentTime - lastLocUpdate.getOrDefault(mac, 0L) > 15000) {
                         lastLocUpdate[mac] = currentTime
 
                         @SuppressLint("MissingPermission")
-                        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                        fusedLocationClient.getCurrentLocation(
+                            Priority.PRIORITY_HIGH_ACCURACY,
+                            null
+                        ).addOnSuccessListener { location ->
                             if (location != null) {
-                                serviceScope.launch {
-                                    // Continuously drop breadcrumbs in the background
-                                    trackingDao.updateLastSeenLocation(mac, location.latitude, location.longitude)
+                                if (location.accuracy <= 20.0f) {
+                                    serviceScope.launch {
+                                        trackingDao.updateLastSeenLocation(mac, location.latitude, location.longitude)
+                                        Log.w("PIPELINE", "📍 HIGH ACCURACY BREADCRUMB DROPPED: ${location.latitude}, ${location.longitude} (Accuracy: ${location.accuracy}m)")
+                                    }
+                                } else {
+                                    Log.w("PIPELINE", "⚠️ Ignored low-accuracy GPS fix (${location.accuracy}m drift)")
                                 }
                             }
                         }
@@ -181,6 +177,7 @@ class ProxiTrackService : Service() {
         }
     }
 
+    // --- UPDATED 3-CYCLE MONITOR ---
     private fun startCycleMonitor() {
         serviceScope.launch {
             while (true) {
@@ -191,13 +188,44 @@ class ProxiTrackService : Service() {
                     val missed = missedCycles.getOrDefault(mac, 0) + 1
                     missedCycles[mac] = missed
 
+                    // THE 3-CYCLE RULE: If missing for ~30 seconds
                     if (missed == 3) {
-                        Log.w("PIPELINE", "WARNING: Tag $mac silent for 30s! Triggering GPS.")
+                        Log.w("ProxiTrack", "WARNING: Tag $mac lost! Triggering Tethered GPS.")
+
+                        // 1. Drop the map pin
                         triggerTetheredGps(mac)
+
+                        // 2. FIRE THE NOTIFICATION
+                        val node = trackingDao.getNodeByMac(mac)
+                        val tagName = node?.customName ?: "Tag"
+                        sendLostTagNotification(tagName)
                     }
                 }
             }
         }
+    }
+
+    // --- NEW NOTIFICATION BUILDER ---
+    private fun sendLostTagNotification(customName: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // This makes the notification clickable (opens your app to the map)
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+
+        val builder = NotificationCompat.Builder(this, "ProxiTrack_Alerts")
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("⚠️ Tag Left Behind!")
+            .setContentText("You just lost connection to your $customName. Tap to view its last known location.")
+            .setPriority(NotificationCompat.PRIORITY_MAX) // Heads-up display
+            .setDefaults(NotificationCompat.DEFAULT_ALL) // Trigger default sound/vibrate
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+
+        // Using a unique ID so if you lose 2 tags, you get 2 separate notifications
+        notificationManager.notify(customName.hashCode(), builder.build())
     }
 
     @SuppressLint("MissingPermission")
@@ -230,14 +258,28 @@ class ProxiTrackService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // --- UPDATED CHANNEL CREATION ---
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+
+            // 1. The Silent Background Channel (Already exists)
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "ProxiTrack Background Tracking",
                 NotificationManager.IMPORTANCE_LOW
             )
-            getSystemService(NotificationManager::class.java).createNotificationChannel(serviceChannel)
+            manager.createNotificationChannel(serviceChannel)
+
+            // 2. NEW: The High-Priority Alert Channel
+            val alertChannel = NotificationChannel(
+                "ProxiTrack_Alerts",
+                "Lost Tag Alerts",
+                NotificationManager.IMPORTANCE_HIGH // Forces sound, vibration, and pop-up
+            ).apply {
+                description = "Rings and vibrates when a tag is left behind"
+            }
+            manager.createNotificationChannel(alertChannel)
         }
     }
 }

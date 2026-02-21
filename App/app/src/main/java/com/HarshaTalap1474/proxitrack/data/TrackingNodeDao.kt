@@ -36,4 +36,7 @@ interface TrackingNodeDao {
     // 6. DELETE: Allows the user to remove a tag from their app.
     @Delete
     suspend fun deleteNode(node: TrackingNode)
+
+    @Query("SELECT * FROM tracking_nodes WHERE macAddress = :mac LIMIT 1")
+    suspend fun getNodeByMac(mac: String): TrackingNode?
 }
