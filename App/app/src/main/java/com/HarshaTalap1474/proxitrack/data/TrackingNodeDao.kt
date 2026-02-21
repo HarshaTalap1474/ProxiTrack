@@ -17,8 +17,9 @@ interface TrackingNodeDao {
 
     // 2. DASHBOARD UI: Retrieves all tags to display on the screen.
     // 'Flow' means the UI will automatically react to any changes in the database.
-    @Query("SELECT * FROM tracking_nodes ORDER BY lastSeenTimestamp DESC")
-    fun getAllNodes(): Flow<List<TrackingNode>>
+    // Forces the database to always return the list in Alphabetical order
+    @Query("SELECT * FROM tracking_nodes ORDER BY customName ASC")
+    fun getAllNodes(): kotlinx.coroutines.flow.Flow<List<TrackingNode>>
 
     // 3. BLE SCANNER: Gets just the list of MAC addresses.
     // The Foreground Service uses this to know exactly which ESP32s to look for.
