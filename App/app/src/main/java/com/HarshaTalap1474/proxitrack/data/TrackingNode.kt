@@ -26,5 +26,8 @@ data class TrackingNode(
     var lastRssi: Int = -100,
 
     // A timestamp of when the app last successfully "saw" the BLE signal
-    var lastSeenTimestamp: Long = System.currentTimeMillis()
+    var lastSeenTimestamp: Long = System.currentTimeMillis(),
+
+    // New entity to store the 4 digit secrete key for authenticated handshake
+    val secretPin: Int = 0
 )

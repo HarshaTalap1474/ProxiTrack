@@ -267,6 +267,9 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Save Device") { _, _ ->
                 val name = etName.text.toString().ifEmpty { "My Tracker" }
 
+                // --- 1. GENERATE THE SECURE 4-DIGIT PIN ---
+                val generatedPin = (1000..9999).random()
+
                 lifecycleScope.launch {
                     trackingDao.insertNode(
                         TrackingNode(
@@ -274,12 +277,12 @@ class MainActivity : AppCompatActivity() {
                             customName = name,
                             iconId = android.R.drawable.ic_secure,
                             status = 0,
-                            lastRssi = -50
+                            lastRssi = -50,
+                            secretPin = generatedPin // <-- 2. SAVE IT TO DB
                         )
                     )
-                    Toast.makeText(this@MainActivity, "$name Added!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "$name Added! (PIN: $generatedPin)", Toast.LENGTH_LONG).show()
 
-                    // --- THE CRITICAL FIX: WAKE UP THE BACKGROUND ENGINE! ---
                     startTrackingEngine()
                 }
             }

@@ -36,10 +36,20 @@
         android:textSize="14sp" />
 
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnOpenMaps"
+        android:id="@+id/btnRingDevice"
         android:layout_width="match_parent"
         android:layout_height="60dp"
         android:layout_marginTop="48dp"
+        android:text="Ring Tag (Buzzer)"
+        android:backgroundTint="#FFB300"
+        app:icon="@android:drawable/ic_lock_idle_alarm"
+        app:cornerRadius="12dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnOpenMaps"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:layout_marginTop="16dp"
         android:text="Find in Google Maps"
         app:icon="@android:drawable/ic_dialog_map"
         app:cornerRadius="12dp" />
