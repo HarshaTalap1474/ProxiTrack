@@ -178,6 +178,7 @@ class ProxiTrackService : Service() {
     }
 
     // --- UPDATED 3-CYCLE MONITOR ---
+    // This loop runs every 10 seconds to check for dropped connections
     private fun startCycleMonitor() {
         serviceScope.launch {
             while (true) {
@@ -190,15 +191,20 @@ class ProxiTrackService : Service() {
 
                     // THE 3-CYCLE RULE: If missing for ~30 seconds
                     if (missed == 3) {
-                        Log.w("ProxiTrack", "WARNING: Tag $mac lost! Triggering Tethered GPS.")
+                        Log.w("ProxiTrack", "WARNING: Tag $mac lost! Freezing last known location.")
 
-                        // 1. Drop the map pin
-                        triggerTetheredGps(mac)
+                        // 1. Update UI Status to "Lost" (Status 2), but DO NOT update GPS!
+                        val currentTime = System.currentTimeMillis()
+                        // We set RSSI to -100 to show it's disconnected
+                        trackingDao.updateRssiAndStatus(mac, -100, 2, currentTime)
 
                         // 2. FIRE THE NOTIFICATION
                         val node = trackingDao.getNodeByMac(mac)
                         val tagName = node?.customName ?: "Tag"
                         sendLostTagNotification(tagName)
+
+                        // ❌ NOTICE: We completely removed the line that fetches new location data here.
+                        // The database will now perfectly preserve your room's coordinates!
                     }
                 }
             }
@@ -216,7 +222,7 @@ class ProxiTrackService : Service() {
         val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
 
         val builder = NotificationCompat.Builder(this, "ProxiTrack_Alerts")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setSmallIcon(R.drawable.ic_custom_logo)
             // --- THE UPGRADE: Dynamic Personalized Title ---
             .setContentTitle("⚠️ $customName Left Behind!")
             .setContentText("We lost connection to your $customName. Tap to view its exact location on the map.")
