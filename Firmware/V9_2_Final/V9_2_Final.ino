@@ -308,4 +308,6 @@ void setup() {
     vTaskDelete(NULL); 
 }
 
-void loop() {}
+void loop() {
+    // NO USE OF THIS SUPER LOOP FUNCTION IN RTOS
+}
