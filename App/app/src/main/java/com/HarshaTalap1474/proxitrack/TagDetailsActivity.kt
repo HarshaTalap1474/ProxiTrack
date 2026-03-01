@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,61 +22,107 @@ import java.util.UUID
 
 class TagDetailsActivity : AppCompatActivity() {
 
+    // ---------------- UI ----------------
+    private lateinit var tvName: TextView
+    private lateinit var tvMac: TextView
+    private lateinit var tvBatteryDetails: TextView
+    private lateinit var btnOpenMaps: MaterialButton
+    private lateinit var btnUnpair: MaterialButton
+    private lateinit var btnRingDevice: MaterialButton
+
+    // ---------------- Data ----------------
     private var currentLat: Double? = null
     private var currentLng: Double? = null
     private var customName: String = "Tracker"
-
-    // The MAC address passed from the Dashboard
     private lateinit var macAddress: String
 
-    // The Hardware Contract UUIDs
+    // ---------------- BLE UUIDs ----------------
     private val SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
     private val AUTH_CHAR_UUID = UUID.fromString("8d8218b6-97bc-4527-a8db-130940ddb633")
     private val BUZZER_CHAR_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
 
-    // BLE Variables
     private var bluetoothGatt: BluetoothGatt? = null
-    private var tagSecretPin: Int = 1234 // Default fallback PIN
+    private var tagSecretPin: Int = 1234
 
+    private val dao by lazy {
+        AppDatabase.getDatabase(this).trackingNodeDao()
+    }
+
+    // ----------------------------------------------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_tag_details)
 
         macAddress = intent.getStringExtra("MAC_ADDRESS") ?: return
 
-        val tvName = findViewById<TextView>(R.id.tvDetailName)
-        val tvMac = findViewById<TextView>(R.id.tvDetailMac)
-        val btnOpenMaps = findViewById<MaterialButton>(R.id.btnOpenMaps)
-        val btnUnpair = findViewById<MaterialButton>(R.id.btnUnpair)
-        val btnRingDevice = findViewById<MaterialButton>(R.id.btnRingDevice)
+        initViews()
+        observeDatabase()
+        setupClickListeners()
+    }
+
+    // ----------------------------------------------------
+    private fun initViews() {
+        tvName = findViewById(R.id.tvDetailName)
+        tvMac = findViewById(R.id.tvDetailMac)
+        tvBatteryDetails = findViewById(R.id.tvBatteryDetails)
+        btnOpenMaps = findViewById(R.id.btnOpenMaps)
+        btnUnpair = findViewById(R.id.btnUnpair)
+        btnRingDevice = findViewById(R.id.btnRingDevice)
 
         tvMac.text = "MAC: $macAddress"
-        val dao = AppDatabase.getDatabase(this).trackingNodeDao()
+    }
 
-        // 1. Observe Tag Data
+    // ----------------------------------------------------
+    private fun observeDatabase() {
         lifecycleScope.launch {
             dao.getNodeByMacFlow(macAddress).collectLatest { node ->
-                if (node != null) {
-                    tvName.text = node.customName
-                    customName = node.customName
-                    currentLat = node.lastSeenLat
-                    currentLng = node.lastSeenLng
+                node ?: return@collectLatest
 
-                    // NOTE: If you add 'secretPin' to your TrackingNode data class later,
-                    // you can uncomment the line below to load it dynamically:
-                    // tagSecretPin = node.secretPin
-                }
+                tvName.text = node.customName
+                customName = node.customName
+                currentLat = node.lastSeenLat
+                currentLng = node.lastSeenLng
+
+                updateBatteryUI(node.batteryLevel)
             }
         }
+    }
 
-        // 2. Ring Device (GATT Connection)
+    // ----------------------------------------------------
+    private fun updateBatteryUI(batteryLevel: Int) {
+
+        if (batteryLevel >= 0) {
+            tvBatteryDetails.text = "🔋 Battery: $batteryLevel%"
+        } else {
+            tvBatteryDetails.text = "🔋 Battery: --"
+        }
+
+        when {
+            batteryLevel >= 60 ->
+                tvBatteryDetails.setTextColor(Color.parseColor("#2E7D32")) // Green
+
+            batteryLevel in 20..59 ->
+                tvBatteryDetails.setTextColor(Color.parseColor("#F9A825")) // Yellow
+
+            batteryLevel in 0..19 ->
+                tvBatteryDetails.setTextColor(Color.parseColor("#C62828")) // Red
+
+            else ->
+                tvBatteryDetails.setTextColor(Color.GRAY)
+        }
+    }
+
+    // ----------------------------------------------------
+    private fun setupClickListeners() {
+
+        // Ring Tag
         btnRingDevice.setOnClickListener {
             btnRingDevice.text = "Connecting..."
             btnRingDevice.isEnabled = false
             triggerBuzzerOnTag()
         }
 
-        // 3. Google Maps Routing
+        // Open Maps
         btnOpenMaps.setOnClickListener {
             if (currentLat != null && currentLng != null && currentLat != 0.0) {
                 val uri = Uri.parse("geo:0,0?q=$currentLat,$currentLng($customName)")
@@ -87,16 +134,22 @@ class TagDetailsActivity : AppCompatActivity() {
             }
         }
 
-        // 4. Unpair
+        // ✅ Updated Unpair Logic (markForWipe)
         btnUnpair.setOnClickListener {
             MaterialAlertDialogBuilder(this)
                 .setTitle("Unpair $customName?")
-                .setMessage("This will remove the tag from your cloud registry.")
+                .setMessage("This will mark the tag for secure wipe and remove it from your account.")
                 .setPositiveButton("Unpair") { _, _ ->
+
                     lifecycleScope.launch {
-                        dao.deleteByMac(macAddress)
-                        Toast.makeText(this@TagDetailsActivity, "Device Unpaired", Toast.LENGTH_SHORT).show()
-                        finish()
+                        dao.markForWipe(macAddress)
+                        Toast.makeText(
+                            this@TagDetailsActivity,
+                            "Tag marked for wipe",
+                            Toast.LENGTH_SHORT
+                        ).show()
+
+                        finish() // Return to dashboard
                     }
                 }
                 .setNegativeButton("Cancel", null)
@@ -104,9 +157,13 @@ class TagDetailsActivity : AppCompatActivity() {
         }
     }
 
+    // ----------------------------------------------------
     @SuppressLint("MissingPermission")
     private fun triggerBuzzerOnTag() {
-        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+
+        val bluetoothManager =
+            getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+
         val adapter = bluetoothManager.adapter
 
         if (adapter == null || !adapter.isEnabled) {
@@ -119,101 +176,115 @@ class TagDetailsActivity : AppCompatActivity() {
             val device = adapter.getRemoteDevice(macAddress)
             bluetoothGatt = device.connectGatt(this, false, gattCallback)
         } catch (e: Exception) {
-            Log.e("GATT", "Error connecting to device", e)
+            Log.e("GATT", "Connection error", e)
             resetRingButton()
         }
     }
 
-    // --- UPGRADED TWO-STEP GATT CALLBACK ---
+    // ----------------------------------------------------
     private val gattCallback = object : BluetoothGattCallback() {
 
-        @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        override fun onConnectionStateChange(
+            gatt: BluetoothGatt,
+            status: Int,
+            newState: Int
+        ) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d("GATT", "Connected. Discovering services...")
                 gatt.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d("GATT", "Disconnected.")
                 gatt.close()
                 bluetoothGatt = null
                 resetRingButton()
             }
         }
 
-        @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                val service = gatt.getService(SERVICE_UUID)
-                val authCharacteristic = service?.getCharacteristic(AUTH_CHAR_UUID)
+        override fun onServicesDiscovered(
+            gatt: BluetoothGatt,
+            status: Int
+        ) {
+            if (status != BluetoothGatt.GATT_SUCCESS) return
 
-                if (authCharacteristic != null) {
-                    Log.d("GATT", "Step 1: Found Auth Char. Writing PIN: $tagSecretPin...")
+            val service = gatt.getService(SERVICE_UUID)
+            val authChar = service?.getCharacteristic(AUTH_CHAR_UUID) ?: run {
+                gatt.disconnect()
+                return
+            }
 
-                    // Convert our 4-digit PIN to a string payload
-                    val payload = tagSecretPin.toString().toByteArray()
+            val payload = tagSecretPin.toString().toByteArray()
 
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeCharacteristic(authCharacteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-                    } else {
-                        authCharacteristic.value = payload
-                        gatt.writeCharacteristic(authCharacteristic)
-                    }
-                } else {
-                    Log.e("GATT", "Auth Characteristic missing on ESP32!")
-                    gatt.disconnect()
-                }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(
+                    authChar,
+                    payload,
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                )
+            } else {
+                authChar.value = payload
+                gatt.writeCharacteristic(authChar)
             }
         }
 
-        @SuppressLint("MissingPermission")
-        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
 
-                // STEP 2: Did we just successfully write the Auth PIN?
-                if (characteristic.uuid == AUTH_CHAR_UUID) {
-                    Log.d("GATT", "Step 2: Auth PIN accepted! Now sending Buzzer command...")
-
-                    val service = gatt.getService(SERVICE_UUID)
-                    val buzzerChar = service?.getCharacteristic(BUZZER_CHAR_UUID)
-
-                    if (buzzerChar != null) {
-                        val payload = "1".toByteArray()
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            gatt.writeCharacteristic(buzzerChar, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-                        } else {
-                            buzzerChar.value = payload
-                            gatt.writeCharacteristic(buzzerChar)
-                        }
-                    }
-                }
-                // STEP 3: Did we just successfully write the Buzzer command?
-                else if (characteristic.uuid == BUZZER_CHAR_UUID) {
-                    Log.d("GATT", "Step 3: Buzzer triggered!")
-                    runOnUiThread {
-                        Toast.makeText(this@TagDetailsActivity, "Tag is Ringing!", Toast.LENGTH_SHORT).show()
-                    }
-                    gatt.disconnect() // Hang up the phone
-                }
-
-            } else {
-                Log.e("GATT", "Failed to write characteristic. Status: $status")
+            if (status != BluetoothGatt.GATT_SUCCESS) {
                 runOnUiThread {
-                    Toast.makeText(this@TagDetailsActivity, "Auth Failed! Wrong PIN?", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@TagDetailsActivity,
+                        "Auth Failed!",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
+                gatt.disconnect()
+                return
+            }
+
+            if (characteristic.uuid == AUTH_CHAR_UUID) {
+
+                val service = gatt.getService(SERVICE_UUID)
+                val buzzerChar =
+                    service?.getCharacteristic(BUZZER_CHAR_UUID) ?: return
+
+                val payload = "1".toByteArray()
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(
+                        buzzerChar,
+                        payload,
+                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    )
+                } else {
+                    buzzerChar.value = payload
+                    gatt.writeCharacteristic(buzzerChar)
+                }
+
+            } else if (characteristic.uuid == BUZZER_CHAR_UUID) {
+
+                runOnUiThread {
+                    Toast.makeText(
+                        this@TagDetailsActivity,
+                        "Tag is Ringing!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+
                 gatt.disconnect()
             }
         }
     }
 
+    // ----------------------------------------------------
     private fun resetRingButton() {
         runOnUiThread {
-            val btnRingDevice = findViewById<MaterialButton>(R.id.btnRingDevice)
             btnRingDevice.text = "Ring Tag (Buzzer)"
             btnRingDevice.isEnabled = true
         }
     }
 
-    @SuppressLint("MissingPermission")
+    // ----------------------------------------------------
     override fun onDestroy() {
         super.onDestroy()
         bluetoothGatt?.disconnect()

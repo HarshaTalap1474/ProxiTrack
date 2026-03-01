@@ -27,7 +27,12 @@ data class TrackingNode(
 
     // A timestamp of when the app last successfully "saw" the BLE signal
     var lastSeenTimestamp: Long = System.currentTimeMillis(),
-
     // New entity to store the 4 digit secrete key for authenticated handshake
-    val secretPin: Int = 0
+    val secretPin: Int = 0,
+
+    // NEW: Store the live battery percentage
+    var batteryLevel: Int = -1,
+
+    // NEW: The Ghost Wipe flag
+    var pendingWipe: Boolean = false
 )

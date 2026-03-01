@@ -1,36 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:gravity="center_horizontal"
+    android:padding="24dp"
     android:background="#F5F5F5"
-    android:padding="24dp">
+    android:fitsSystemWindows="true">
 
+    <!-- Profile Icon -->
     <ImageView
         android:layout_width="120dp"
         android:layout_height="120dp"
         android:layout_marginTop="64dp"
+        android:contentDescription="Administrator Profile Icon"
         android:src="@android:drawable/ic_menu_myplaces"
         app:tint="#455A64" />
 
+    <!-- Name -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="Administrator"
-        android:textColor="#212121"
         android:textSize="28sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        android:textColor="#212121" />
 
+    <!-- Email -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="admin@proxitrack.com"
-        android:textColor="#757575"
-        android:textSize="16sp" />
+        android:textSize="16sp"
+        android:textColor="#757575" />
 
+    <!-- Stats Card -->
     <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -41,42 +49,47 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:padding="24dp"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:padding="24dp">
 
             <TextView
                 android:layout_width="0dp"
-                android:layout_weight="1"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
                 android:text="Total Devices Paired:"
                 android:textSize="18sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:textColor="#212121" />
 
             <TextView
                 android:id="@+id/tvDeviceCount"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="0"
-                android:textColor="#1976D2"
                 android:textSize="24sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:textColor="#1976D2" />
         </LinearLayout>
+
     </com.google.android.material.card.MaterialCardView>
 
+    <!-- Spacer -->
     <View
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1" />
 
+    <!-- Logout Button -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnLogout"
         style="@style/Widget.MaterialComponents.Button.OutlinedButton"
         android:layout_width="match_parent"
         android:layout_height="60dp"
+        android:layout_marginBottom="16dp"
         android:text="Secure Logout"
         android:textColor="#D32F2F"
         app:strokeColor="#D32F2F"
-        app:cornerRadius="12dp"
-        android:layout_marginBottom="16dp" />
+        app:cornerRadius="12dp" />
 
 </LinearLayout>

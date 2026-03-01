@@ -1,22 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<merge xmlns:android="http://schemas.android.com/apk/res/android"
+
+<merge
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <!-- Camera Surface -->
     <com.journeyapps.barcodescanner.BarcodeView
         android:id="@+id/zxing_barcode_surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:contentDescription="QR Code Camera Preview"
         app:zxing_framing_rect_width="260dp"
         app:zxing_framing_rect_height="260dp" />
 
+    <!-- Viewfinder Overlay -->
     <com.journeyapps.barcodescanner.ViewfinderView
         android:id="@+id/zxing_viewfinder_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        app:zxing_viewfinder_mask="#B3000000"
         app:zxing_viewfinder_laser="@android:color/transparent"
-        app:zxing_possible_result_points="@android:color/transparent"
-        app:zxing_viewfinder_mask="#B3000000" />
+        app:zxing_possible_result_points="@android:color/transparent" />
 
+    <!-- Status Instruction -->
     <TextView
         android:id="@+id/zxing_status_view"
         android:layout_width="wrap_content"
@@ -29,6 +35,8 @@
         android:text="Point at the ProxiTrack QR Code"
         android:textColor="#FFFFFF"
         android:textSize="16sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        android:ellipsize="end"
+        android:maxLines="1" />
 
 </merge>
