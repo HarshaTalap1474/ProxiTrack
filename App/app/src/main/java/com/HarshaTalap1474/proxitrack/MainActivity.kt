@@ -382,5 +382,6 @@ class TagDetailsActivity : AppCompatActivity() {
         @SuppressLint("MissingPermission")
         bluetoothGatt?.close()
         mainHandler.removeCallbacksAndMessages(null)
+        // for removing app from the background
     }
 }
