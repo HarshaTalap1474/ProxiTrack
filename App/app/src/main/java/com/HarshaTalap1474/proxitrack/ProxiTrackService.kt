@@ -250,6 +250,24 @@ class ProxiTrackService : Service() {
         notificationManager.notify(customName.hashCode(), builder.build())
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.w("ProxiTrack", "App swiped away! Forcing service to stay alive...")
+
+        // Create an alarm to restart the service exactly 1 second after the user kills it
+        val restartServiceIntent = Intent(applicationContext, ProxiTrackService::class.java)
+        val restartServicePendingIntent = PendingIntent.getService(
+            this, 1, restartServiceIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val alarmService = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        alarmService.set(
+            android.app.AlarmManager.ELAPSED_REALTIME,
+            android.os.SystemClock.elapsedRealtime() + 1000,
+            restartServicePendingIntent
+        )
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         @SuppressLint("MissingPermission")

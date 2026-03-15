@@ -1,291 +1,386 @@
 package com.HarshaTalap1474.proxitrack
 
-import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.*
+import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.nfc.NdefMessage
-import android.nfc.NfcAdapter
+import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
 import com.HarshaTalap1474.proxitrack.data.AppDatabase
-import com.HarshaTalap1474.proxitrack.data.TrackingNode
-import com.HarshaTalap1474.proxitrack.data.TrackingNodeDao
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.floatingactionbutton.FloatingActionButton
-import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import org.osmdroid.config.Configuration
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.ScaleBarOverlay
-import org.osmdroid.views.overlay.compass.CompassOverlay
-import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
-import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
-import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+import java.util.UUID
 
-class MainActivity : AppCompatActivity() {
+class TagDetailsActivity : AppCompatActivity() {
 
-    private lateinit var mapView: MapView
-    private lateinit var adapter: TagAdapter
-    private lateinit var trackingDao: TrackingNodeDao
-    private lateinit var myLocationOverlay: MyLocationNewOverlay
+    // ---------------- UI ----------------
+    private lateinit var tvName: TextView
+    private lateinit var tvMac: TextView
+    private lateinit var tvBatteryDetails: TextView
+    private lateinit var btnOpenMaps: MaterialButton
+    private lateinit var btnUnpair: MaterialButton
+    private lateinit var btnRingDevice: MaterialButton
 
-    // Store markers so we can clear them without deleting the user's Blue Dot
-    private val tagMarkers = mutableListOf<Marker>()
+    // ---------------- Data ----------------
+    private var currentLat: Double? = null
+    private var currentLng: Double? = null
+    private var customName: String = "Tracker"
+    private lateinit var macAddress: String
 
-    // -----------------------------------------
-    // Permission Handler
-    // -----------------------------------------
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions.values.all { it }) {
-            startTrackingEngine()
-        } else {
-            Toast.makeText(this, "Permissions required for tracking!", Toast.LENGTH_LONG).show()
+    // ---------------- BLE UUIDs ----------------
+    private val SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
+    private val AUTH_CHAR_UUID = UUID.fromString("8d8218b6-97bc-4527-a8db-130940ddb633")
+    private val BUZZER_CHAR_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
+
+    // V9.4 Battery Service UUIDs
+    private val BATTERY_SERVICE_UUID = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb")
+    private val BATTERY_LEVEL_CHAR_UUID = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb")
+    private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    private var bluetoothGatt: BluetoothGatt? = null
+    private var tagSecretPin: Int = 1234
+
+    // State Tracking
+    private var isUnpairMode = false
+    private var isPollingRssi = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val dao by lazy {
+        AppDatabase.getDatabase(this).trackingNodeDao()
+    }
+
+    // --- TIMERS & LOOPS ---
+    private val rssiRunnable = object : Runnable {
+        @SuppressLint("MissingPermission")
+        override fun run() {
+            if (isPollingRssi && bluetoothGatt != null) {
+                bluetoothGatt?.readRemoteRssi()
+                mainHandler.postDelayed(this, 1500)
+            }
         }
     }
 
-    // -----------------------------------------
-    // Lifecycle
-    // -----------------------------------------
+    // 5-Second Timeout for Path B (Force Unpair)
+    @SuppressLint("MissingPermission")
+    private val unpairTimeoutRunnable = Runnable {
+        if (isUnpairMode) {
+            Log.w("BLE_GATT", "Unpair connection timed out. Tag is unreachable.")
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+            bluetoothGatt = null
+            showForceUnpairDialog()
+        }
+    }
+
+    // ----------------------------------------------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Configuration.getInstance().load(applicationContext, getPreferences(MODE_PRIVATE))
-        setContentView(R.layout.activity_main)
+        setContentView(R.layout.activity_tag_details)
 
-        trackingDao = AppDatabase.getDatabase(this).trackingNodeDao()
-        mapView = findViewById(R.id.mapView)
+        macAddress = intent.getStringExtra("MAC_ADDRESS") ?: return
 
-        setupMap()
-        setupRecyclerView()
+        initViews()
         observeDatabase()
-        handleNfcIntent(intent)
-        checkPermissionsAndStart()
-
-        findViewById<FloatingActionButton>(R.id.fabAddTag).setOnClickListener {
-            startActivity(Intent(this, AddDeviceActivity::class.java))
-        }
-
-        // NEW: Link the Profile FAB
-        findViewById<FloatingActionButton>(R.id.fabProfile).setOnClickListener {
-            startActivity(Intent(this, ProfileActivity::class.java))
-        }
+        setupClickListeners()
     }
 
-    override fun onResume() {
-        super.onResume()
-        mapView.onResume()
-        if (::myLocationOverlay.isInitialized) myLocationOverlay.enableMyLocation()
+    private fun initViews() {
+        tvName = findViewById(R.id.tvDetailName)
+        tvMac = findViewById(R.id.tvDetailMac)
+        tvBatteryDetails = findViewById(R.id.tvBatteryDetails)
+        btnOpenMaps = findViewById(R.id.btnOpenMaps)
+        btnUnpair = findViewById(R.id.btnUnpair)
+        btnRingDevice = findViewById(R.id.btnRingDevice)
+
+        tvMac.text = "MAC: $macAddress"
     }
 
-    override fun onPause() {
-        super.onPause()
-        mapView.onPause()
-        if (::myLocationOverlay.isInitialized) myLocationOverlay.disableMyLocation()
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleNfcIntent(intent)
-    }
-
-    // -----------------------------------------
-    // Map Setup
-    // -----------------------------------------
-    private fun setupMap() {
-        mapView.setMultiTouchControls(true)
-        val controller = mapView.controller
-        controller.setZoom(18.0)
-
-        val locationProvider = GpsMyLocationProvider(this)
-        myLocationOverlay = MyLocationNewOverlay(locationProvider, mapView)
-
-        val blueDotDrawable = ContextCompat.getDrawable(this, R.drawable.ic_blue_dot)
-        val blueDotBitmap = blueDotDrawable?.toBitmap(60, 60)
-
-        blueDotBitmap?.let {
-            myLocationOverlay.setPersonIcon(it)
-            myLocationOverlay.setDirectionArrow(it, it)
-            // Fixes the off-center visual bug!
-            myLocationOverlay.setPersonAnchor(0.5f, 0.5f)
-            myLocationOverlay.setDirectionAnchor(0.5f, 0.5f)
-        }
-
-        myLocationOverlay.enableMyLocation()
-        myLocationOverlay.enableFollowLocation()
-        mapView.overlays.add(myLocationOverlay)
-
-        val compassOverlay = CompassOverlay(this, InternalCompassOrientationProvider(this), mapView)
-        compassOverlay.enableCompass()
-        mapView.overlays.add(compassOverlay)
-
-        val scaleBarOverlay = ScaleBarOverlay(mapView)
-        scaleBarOverlay.setCentred(true)
-        scaleBarOverlay.setScaleBarOffset(resources.displayMetrics.widthPixels / 2, 20)
-        mapView.overlays.add(scaleBarOverlay)
-
-        findViewById<FloatingActionButton>(R.id.fabMyLocation).setOnClickListener {
-            val myLocation = myLocationOverlay.myLocation
-            if (myLocation != null) {
-                controller.animateTo(myLocation)
-                controller.setZoom(18.0)
-            } else {
-                Toast.makeText(this, "Searching GPS...", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    // -----------------------------------------
-    // Map Marker Updater
-    // -----------------------------------------
-    private fun updateMapMarkers(nodes: List<TrackingNode>) {
-        // Remove old tag markers safely
-        tagMarkers.forEach { mapView.overlays.remove(it) }
-        tagMarkers.clear()
-
-        // Add fresh markers for lost/tracked tags
-        nodes.forEach { node ->
-            val lat = node.lastSeenLat
-            val lng = node.lastSeenLng
-
-            // Check if coordinates exist and aren't default 0.0
-            if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
-                val marker = Marker(mapView)
-                marker.position = GeoPoint(lat, lng)
-                marker.title = node.customName
-                marker.snippet = if (node.status == 0) "Currently Near You" else "Last Seen Here"
-
-                // Pin points exactly to the coordinate
-                marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                //marker.icon = ContextCompat.getDrawable(this, android.R.drawable.ic_menu_mylocation)
-
-                mapView.overlays.add(marker)
-                tagMarkers.add(marker)
-            }
-        }
-        mapView.invalidate() // Redraw map
-    }
-
-    // -----------------------------------------
-    // RecyclerView Setup
-    // -----------------------------------------
-    private fun setupRecyclerView() {
-        val recyclerView = findViewById<RecyclerView>(R.id.tagsRecyclerView)
-        adapter = TagAdapter()
-        recyclerView.adapter = adapter
-        recyclerView.layoutManager = LinearLayoutManager(this)
-
-        // Swipe handler has been successfully removed!
-    }
-
-    // -----------------------------------------
-    // Database Observer
-    // -----------------------------------------
     private fun observeDatabase() {
         lifecycleScope.launch {
-            trackingDao.getAllNodes().collectLatest { nodes ->
-                adapter.submitList(nodes)
-                // Real-time map pin updates!
-                updateMapMarkers(nodes)
+            dao.getNodeByMacFlow(macAddress).collectLatest { node ->
+                node ?: return@collectLatest
+                tvName.text = node.customName
+                customName = node.customName
+                currentLat = node.lastSeenLat
+                currentLng = node.lastSeenLng
+                tagSecretPin = node.secretPin // Ensure we have the correct PIN to authenticate
+
+                updateBatteryUI(node.batteryLevel)
             }
         }
     }
 
-    // -----------------------------------------
-    // Permissions & Service
-    // -----------------------------------------
-    private fun checkPermissionsAndStart() {
-        val requiredPermissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requiredPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-
-        val missing = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-
-        if (missing.isEmpty()) {
-            startTrackingEngine()
+    private fun updateBatteryUI(batteryLevel: Int) {
+        if (batteryLevel >= 0) {
+            tvBatteryDetails.text = "🔋 Battery: $batteryLevel%"
         } else {
-            requestPermissionLauncher.launch(missing.toTypedArray())
+            tvBatteryDetails.text = "🔋 Battery: --"
+        }
+
+        when {
+            batteryLevel >= 60 -> tvBatteryDetails.setTextColor(Color.parseColor("#2E7D32"))
+            batteryLevel in 20..59 -> tvBatteryDetails.setTextColor(Color.parseColor("#F9A825"))
+            batteryLevel in 0..19 -> tvBatteryDetails.setTextColor(Color.parseColor("#C62828"))
+            else -> tvBatteryDetails.setTextColor(Color.GRAY)
         }
     }
 
-    private fun startTrackingEngine() {
-        val intent = Intent(this, ProxiTrackService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+    private fun setupClickListeners() {
+        // Ring Tag
+        btnRingDevice.setOnClickListener {
+            isUnpairMode = false
+            btnRingDevice.text = "Connecting..."
+            btnRingDevice.isEnabled = false
+            btnUnpair.isEnabled = false
+            connectToTag()
+        }
+
+        // Open Maps
+        btnOpenMaps.setOnClickListener {
+            if (currentLat != null && currentLng != null && currentLat != 0.0) {
+                val uri = Uri.parse("geo:0,0?q=$currentLat,$currentLng($customName)")
+                val mapIntent = Intent(Intent.ACTION_VIEW, uri)
+                mapIntent.setPackage("com.google.android.apps.maps")
+                startActivity(mapIntent)
+            } else {
+                Toast.makeText(this, "No location data available yet.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // V9.5 Unpair Logic
+        btnUnpair.setOnClickListener {
+            isUnpairMode = true
+            btnUnpair.text = "Attempting Safe Unpair..."
+            btnUnpair.isEnabled = false
+            btnRingDevice.isEnabled = false
+
+            // Start the 5-second timeout for Path B
+            mainHandler.postDelayed(unpairTimeoutRunnable, 5000)
+            connectToTag()
         }
     }
 
-    // -----------------------------------------
-    // Hardware Provisioning (NFC)
-    // -----------------------------------------
-    private fun handleNfcIntent(intent: Intent?) {
-        if (intent?.action != NfcAdapter.ACTION_NDEF_DISCOVERED) return
+    @SuppressLint("MissingPermission")
+    private fun connectToTag() {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = bluetoothManager.adapter
 
-        val rawMessages = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES) ?: return
-        val message = rawMessages[0] as NdefMessage
-        val payload = String(message.records[0].payload)
+        if (adapter == null || !adapter.isEnabled) {
+            if (isUnpairMode) {
+                mainHandler.removeCallbacks(unpairTimeoutRunnable)
+                showForceUnpairDialog()
+            } else {
+                Toast.makeText(this, "Please turn on Bluetooth", Toast.LENGTH_SHORT).show()
+                resetButtons()
+            }
+            return
+        }
 
-        if (payload.startsWith("PROXITRACK:NODE:")) {
-            val mac = payload.removePrefix("PROXITRACK:NODE:").trim().uppercase()
-            showRenameDialog(mac)
+        try {
+            val device = adapter.getRemoteDevice(macAddress)
+            bluetoothGatt = device.connectGatt(this, false, gattCallback)
+        } catch (e: Exception) {
+            Log.e("GATT", "Connection error", e)
+            if (isUnpairMode) {
+                mainHandler.removeCallbacks(unpairTimeoutRunnable)
+                showForceUnpairDialog()
+            } else {
+                resetButtons()
+            }
         }
     }
 
-    private fun showRenameDialog(macAddress: String) {
-        val view = layoutInflater.inflate(R.layout.dialog_edit_tag, null)
-        val etName = view.findViewById<TextInputEditText>(R.id.etTagName)
+    // ----------------------------------------------------
+    // V9.5 GATT CALLBACK MANAGER
+    // ----------------------------------------------------
+    private val gattCallback = object : BluetoothGattCallback() {
 
-        MaterialAlertDialogBuilder(this)
-            .setView(view)
-            .setCancelable(false)
-            .setPositiveButton("Save Device") { _, _ ->
-                val name = etName.text.toString().ifEmpty { "My Tracker" }
+        @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                gatt.discoverServices()
 
-                // --- 1. GENERATE THE SECURE 4-DIGIT PIN ---
-                val generatedPin = (1000..9999).random()
+                // If ringing the buzzer, start the V9.4 RSSI Polling
+                if (!isUnpairMode) {
+                    isPollingRssi = true
+                    mainHandler.post(rssiRunnable)
+                }
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                isPollingRssi = false
+                mainHandler.removeCallbacks(rssiRunnable)
+                gatt.close()
+                bluetoothGatt = null
 
-                lifecycleScope.launch {
-                    trackingDao.insertNode(
-                        TrackingNode(
-                            macAddress = macAddress,
-                            customName = name,
-                            iconId = android.R.drawable.ic_secure,
-                            status = 0,
-                            lastRssi = -50,
-                            secretPin = generatedPin // <-- 2. SAVE IT TO DB
-                        )
-                    )
-                    Toast.makeText(this@MainActivity, "$name Added! (PIN: $generatedPin)", Toast.LENGTH_LONG).show()
-
-                    startTrackingEngine()
+                // If it disconnected while trying to unpair, Path A failed. Trigger Path B.
+                if (isUnpairMode) {
+                    mainHandler.removeCallbacks(unpairTimeoutRunnable)
+                    runOnUiThread { showForceUnpairDialog() }
+                } else {
+                    resetButtons()
                 }
             }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+
+            // V9.4 Live Battery Subscription (Only when ringing)
+            if (!isUnpairMode) {
+                val batteryService = gatt.getService(BATTERY_SERVICE_UUID)
+                val batteryChar = batteryService?.getCharacteristic(BATTERY_LEVEL_CHAR_UUID)
+                if (batteryChar != null) {
+                    gatt.setCharacteristicNotification(batteryChar, true)
+                    val descriptor = batteryChar.getDescriptor(CCCD_UUID)
+                    if (descriptor != null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                        } else {
+                            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            gatt.writeDescriptor(descriptor)
+                        }
+                    }
+                }
+            }
+
+            // Authentication (Required for both Buzzer and Unpair)
+            val service = gatt.getService(SERVICE_UUID)
+            val authChar = service?.getCharacteristic(AUTH_CHAR_UUID) ?: run {
+                gatt.disconnect()
+                return
+            }
+
+            val payload = tagSecretPin.toString().toByteArray()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(authChar, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            } else {
+                authChar.value = payload
+                gatt.writeCharacteristic(authChar)
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                if (isUnpairMode) {
+                    mainHandler.removeCallbacks(unpairTimeoutRunnable)
+                    runOnUiThread { showForceUnpairDialog() }
+                } else {
+                    runOnUiThread { Toast.makeText(this@TagDetailsActivity, "Auth Failed!", Toast.LENGTH_SHORT).show() }
+                }
+                gatt.disconnect()
+                return
+            }
+
+            // Auth successful -> Send specific command
+            if (characteristic.uuid == AUTH_CHAR_UUID) {
+                val service = gatt.getService(SERVICE_UUID)
+                val cmdChar = service?.getCharacteristic(BUZZER_CHAR_UUID) ?: return
+
+                // V9.5: "2" for Safe Unpair, "1" for Buzzer
+                val payload = if (isUnpairMode) "2".toByteArray() else "1".toByteArray()
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(cmdChar, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                } else {
+                    cmdChar.value = payload
+                    gatt.writeCharacteristic(cmdChar)
+                }
+
+            } else if (characteristic.uuid == BUZZER_CHAR_UUID) {
+                // Command successfully received by ESP32!
+                if (isUnpairMode) {
+                    // PATH A SUCCESS
+                    mainHandler.removeCallbacks(unpairTimeoutRunnable)
+                    runOnUiThread {
+                        Toast.makeText(this@TagDetailsActivity, "Safe Unpair Successful! Tag Memory Wiped.", Toast.LENGTH_LONG).show()
+                    }
+                    lifecycleScope.launch {
+                        dao.markForWipe(macAddress)
+                        runOnUiThread { finish() }
+                    }
+                } else {
+                    // BUZZER SUCCESS
+                    runOnUiThread { Toast.makeText(this@TagDetailsActivity, "Tag is Ringing!", Toast.LENGTH_SHORT).show() }
+                }
+                gatt.disconnect()
+            }
+        }
+
+        // V9.4 Live RSSI Callback
+        override fun onReadRemoteRssi(gatt: BluetoothGatt, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("BLE_GATT", "Live RSSI: $rssi")
+            }
+        }
+
+        // V9.4 Live Battery Notification Callback (Android 13+)
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            if (characteristic.uuid == BATTERY_LEVEL_CHAR_UUID && value.isNotEmpty()) {
+                val liveBattery = value[0].toInt() and 0xFF
+                runOnUiThread { updateBatteryUI(liveBattery) }
+            }
+        }
+
+        // V9.4 Live Battery Notification Callback (Android 12 and below)
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (characteristic.uuid == BATTERY_LEVEL_CHAR_UUID) {
+                val liveBattery = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT8, 0)
+                runOnUiThread { updateBatteryUI(liveBattery) }
+            }
+        }
+    }
+
+    // ----------------------------------------------------
+    // PATH B: FORCE UNPAIR DIALOG
+    // ----------------------------------------------------
+    private fun showForceUnpairDialog() {
+        mainHandler.removeCallbacks(unpairTimeoutRunnable)
+        isUnpairMode = false
+        resetButtons()
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("⚠️ Tag Unreachable")
+            .setMessage("Forcing this unpair will delete it from your app, but the physical tag will remain locked. If you find this tag again, you MUST hold the physical button on the tag for 5 seconds to factory reset it before it can be paired to a new phone.")
+            .setPositiveButton("Force Unpair") { _, _ ->
+                lifecycleScope.launch {
+                    dao.markForWipe(macAddress)
+                    Toast.makeText(this@TagDetailsActivity, "Tag Force Unpaired", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            }
+            .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun resetButtons() {
+        runOnUiThread {
+            btnRingDevice.text = "Ring Tag (Buzzer)"
+            btnRingDevice.isEnabled = true
+
+            btnUnpair.text = "Unpair"
+            btnUnpair.isEnabled = true
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        @SuppressLint("MissingPermission")
+        bluetoothGatt?.disconnect()
+        @SuppressLint("MissingPermission")
+        bluetoothGatt?.close()
+        mainHandler.removeCallbacksAndMessages(null)
     }
 }
